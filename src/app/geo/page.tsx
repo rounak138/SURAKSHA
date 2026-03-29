@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Navigation, AlertTriangle, Crosshair, MapPin, Search, Shield } from "lucide-react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
+import type { ThreatMarker } from "@/lib/threat-engine";
 
 const SatelliteMap = dynamic(() => import("@/components/maps/SatelliteMap"), {
   ssr: false,
@@ -24,7 +25,12 @@ export default function GeoPage() {
   const [heading, setHeading] = useState<number | null>(null);
   const [speed, setSpeed] = useState<number | null>(null);
   const [accuracy, setAccuracy] = useState<number | null>(null);
-  const mapRef = useRef<HTMLDivElement>(null);
+  const [threatPins, setThreatPins] = useState<ThreatMarker[]>([]);
+  const [threatZone, setThreatZone] = useState<string | null>(null);
+  const [threatSummary, setThreatSummary] = useState<string | null>(null);
+  const [threatLoading, setThreatLoading] = useState(false);
+  const [threatError, setThreatError] = useState<string | null>(null);
+  const [hoveredThreat, setHoveredThreat] = useState<ThreatMarker | null>(null);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -60,6 +66,54 @@ export default function GeoPage() {
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
+
+  useEffect(() => {
+    if (!loc) return;
+    const ctrl = new AbortController();
+    setThreatLoading(true);
+    setThreatError(null);
+    const t = setTimeout(() => {
+      fetch(`/api/threat-map?lat=${loc.lat}&lng=${loc.lng}`, { signal: ctrl.signal })
+        .then((r) => {
+          if (!r.ok) throw new Error("Threat data unavailable");
+          return r.json();
+        })
+        .then((data: { zone?: string; summary?: string; markers?: ThreatMarker[] }) => {
+          setThreatZone(data.zone ?? null);
+          setThreatSummary(data.summary ?? null);
+          setThreatPins(Array.isArray(data.markers) ? data.markers : []);
+        })
+        .catch((e: Error) => {
+          if (e.name === "AbortError") return;
+          setThreatError(e.message);
+          setThreatPins([]);
+        })
+        .finally(() => setThreatLoading(false));
+    }, 600);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  }, [loc?.lat, loc?.lng]);
+
+  // Fire news-based threat scan once when location is first obtained
+  useEffect(() => {
+    if (!loc) return;
+    // Only run once per mount (no deps on loc change to avoid spam)
+    fetch("/api/news-threat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lat: loc.lat, lng: loc.lng }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.created > 0) {
+          console.log(`[geo] News threats sent to admin: ${d.created} (${d.city})`);
+        }
+      })
+      .catch(() => {/* silent fail */});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!loc]); // Run once when loc becomes truthy
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-[#0B0F19] transition-colors duration-300">
@@ -121,7 +175,12 @@ export default function GeoPage() {
 
             {loc ? (
                <div className="absolute inset-0 z-0">
-                 <SatelliteMap lat={loc.lat} lng={loc.lng} />
+                 <SatelliteMap 
+                   lat={loc.lat} 
+                   lng={loc.lng} 
+                   threatMarkers={threatPins} 
+                   onHover={setHoveredThreat} 
+                 />
                </div>
             ) : (
               <div className="absolute inset-0 opacity-[0.05]" style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, black 1px, transparent 0)', backgroundSize: '24px 24px' }} />
@@ -130,11 +189,49 @@ export default function GeoPage() {
             {/* Data Overlay */}
             {loc && (
                 <div className="absolute bottom-6 left-6 right-6 flex flex-col sm:flex-row gap-4 justify-between pointer-events-none">
-                    <div className="rounded-2xl border border-white/20 bg-slate-900/80 p-4 backdrop-blur-md shadow-2xl w-full sm:w-auto ring-1 ring-black/5">
+                    <div className="rounded-2xl border border-white/20 bg-slate-900/80 p-4 backdrop-blur-md shadow-2xl w-full sm:w-auto ring-1 ring-black/5 max-w-md pointer-events-auto">
                         <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">Current Coordinates</p>
                         <p className="mt-1.5 font-mono text-base font-semibold text-white drop-shadow-md">
                             {loc.lat.toFixed(6)}° N<br/>{loc.lng.toFixed(6)}° E
                         </p>
+                        {(threatLoading || threatZone || threatSummary || threatError || hoveredThreat) && (
+                          <div className="mt-3 border-t border-white/10 pt-3">
+                            <p className="text-[11px] font-bold uppercase tracking-widest text-slate-400">
+                              {hoveredThreat ? 'Focused Threat Detail' : 'AI threat map'}
+                            </p>
+                            {threatLoading && !hoveredThreat && (
+                              <p className="mt-1 text-xs text-slate-300">Analyzing nearby risk…</p>
+                            )}
+                            {threatError && !threatLoading && !hoveredThreat && (
+                              <p className="mt-1 text-xs text-amber-300">{threatError}</p>
+                            )}
+                            {(hoveredThreat?.zone || threatZone) && !threatLoading && (
+                              <div className="mt-1.5">
+                                <span
+                                  className={`inline-block rounded px-2 py-0.5 text-xs font-bold ${
+                                    (hoveredThreat?.zone || threatZone) === "RED"
+                                      ? "bg-red-600 text-white"
+                                      : (hoveredThreat?.zone || threatZone) === "ORANGE"
+                                        ? "bg-orange-600 text-white"
+                                        : (hoveredThreat?.zone || threatZone) === "YELLOW"
+                                          ? "bg-yellow-500 text-slate-900"
+                                          : "bg-emerald-600 text-white"
+                                  }`}
+                                >
+                                  {hoveredThreat?.zone || threatZone}
+                                </span>
+                                <span className="ml-2 text-xs text-slate-300">
+                                  {hoveredThreat ? hoveredThreat.label : 'Colored pins show approximate hotspots.'}
+                                </span>
+                              </div>
+                            )}
+                            {!threatLoading && (hoveredThreat?.summary || threatSummary) && (
+                              <p className="mt-2 text-xs leading-relaxed text-slate-200 line-clamp-4">
+                                {hoveredThreat?.summary || threatSummary}
+                              </p>
+                            )}
+                          </div>
+                        )}
                     </div>
 
                     <div className="rounded-2xl border border-white/20 bg-slate-900/80 p-4 backdrop-blur-md shadow-2xl w-full sm:w-auto flex gap-8 ring-1 ring-black/5">

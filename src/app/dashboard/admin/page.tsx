@@ -82,14 +82,28 @@ type Analytics = {
   safetyScore: number;
 };
 
-type Tab = "overview" | "alerts" | "firs" | "analytics" | "tourists";
+type AdminThreat = {
+  id: string;
+  lat: number;
+  lng: number;
+  location: string;
+  score: number;
+  zone: string;
+  summary: string;
+  status: string;
+  createdAt: string;
+  newsSource: string | null;
+  reportedBy: { name: string; email: string; phone: string | null } | null;
+};
+
+type Tab = "overview" | "alerts" | "threats" | "firs" | "analytics" | "tourists";
 
 export default function AdminDashboardPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab") as Tab | null;
   const [tab, setTab] = useState<Tab>(
-    tabParam && ["overview", "alerts", "firs", "analytics", "tourists"].includes(tabParam)
+    tabParam && ["overview", "alerts", "threats", "firs", "analytics", "tourists"].includes(tabParam)
       ? tabParam
       : "overview",
   );
@@ -97,11 +111,12 @@ export default function AdminDashboardPage() {
   const [tourists, setTourists] = useState<Tourist[]>([]);
   const [emergencies, setEmergencies] = useState<EmergencyEvent[]>([]);
   const [adminFirs, setAdminFirs] = useState<AdminFIR[]>([]);
+  const [adminThreats, setAdminThreats] = useState<AdminThreat[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (tabParam && ["overview", "alerts", "firs", "analytics", "tourists"].includes(tabParam)) {
+    if (tabParam && ["overview", "alerts", "threats", "firs", "analytics", "tourists"].includes(tabParam)) {
       setTab(tabParam);
     }
   }, [tabParam]);
@@ -126,6 +141,11 @@ export default function AdminDashboardPage() {
       fetch("/api/admin/firs")
         .then((r) => r.json())
         .then((d) => setAdminFirs(d.firs ?? []));
+    }
+    if (tab === "threats" && adminThreats.length === 0) {
+      fetch("/api/admin/threats")
+        .then((r) => r.json())
+        .then((d) => setAdminThreats(d.threats ?? []));
     }
     if (tab === "analytics" && !analytics) {
       fetch("/api/admin/analytics")
@@ -205,6 +225,7 @@ export default function AdminDashboardPage() {
         {([
           ["overview", "Command Center", Shield],
           ["alerts", "Active Beacons", AlertTriangle],
+          ["threats", "Threat Radar", MapPin],
           ["firs", "Incident Reports", FileText],
           ["analytics", "Deep Analytics", BarChart3],
           ["tourists", "Registry Matrix", Users],
@@ -236,6 +257,27 @@ export default function AdminDashboardPage() {
             .then((r) => r.json())
             .then(() => {
               setEmergencies((prev) => prev.map((e) => (e.id === id ? { ...e, resolved: true } : e)));
+            });
+        }} />}
+        {tab === "threats" && <ThreatsAdminTab threats={adminThreats} onStatusChange={(id, status) => {
+          fetch("/api/admin/threats", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id, status }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.success) setAdminThreats((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
+            });
+        }} onRemove={(id) => {
+          fetch("/api/admin/threats", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ id }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (d.success) setAdminThreats((prev) => prev.filter((t) => t.id !== id));
             });
         }} />}
         {tab === "firs" && <FIRsAdminTab firs={adminFirs} onStatusChange={(firId, status) => {
@@ -749,6 +791,156 @@ function TouristRegistryTab({ tourists }: { tourists: Tourist[] }) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────── */
+/*  THREATS RADAR TAB                                       */
+/* ──────────────────────────────────────────────────────── */
+function ThreatsAdminTab({
+  threats,
+  onStatusChange,
+  onRemove,
+}: {
+  threats: AdminThreat[];
+  onStatusChange: (id: string, status: string) => void;
+  onRemove: (id: string) => void;
+}) {
+  const [filter, setFilter] = useState("PENDING");
+  const filtered = threats.filter((t) => filter === "ALL" || t.status === filter);
+
+  return (
+    <div>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4 bg-white dark:bg-[#131B2B] p-3 rounded-xl border border-slate-200 border-zinc-800">
+        <h2 className="text-sm font-bold text-slate-900 dark:text-white tracking-widest ml-2">THREAT RADAR QUEUE (VOL. {threats.length})</h2>
+        <div className="flex flex-wrap gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-100 border-zinc-800/50">
+          {["ALL", "PENDING", "VERIFIED", "REJECTED"].map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => setFilter(s)}
+              className={`rounded-md px-3 py-1.5 text-[10px] uppercase tracking-widest font-bold transition ${
+                filter === s
+                  ? "bg-cyan-500/20 text-cyan-500  border border-cyan-500/30"
+                  : "text-slate-400 hover:text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState icon={MapPin} message="Radar Clear" hint="No threat zones match current filter." color="amber" />
+      ) : (
+        <div className="space-y-4">
+          {filtered.map((t) => (
+            <div
+              key={t.id}
+              className={`rounded-2xl border bg-white dark:bg-[#131B2B]/50 backdrop-blur p-6 hover:border-amber-500/30 transition shadow-lg group relative overflow-hidden ${
+                t.status === "PENDING" ? "border-amber-500/30" : "border-slate-100 border-zinc-800/50"
+              }`}
+            >
+              <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-6 relative z-10">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 flex-wrap mb-3">
+                    <p className="font-mono text-sm font-bold uppercase text-amber-500 ">AI RISK SCORE: {t.score}</p>
+                    <StatusBadge status={t.status} />
+                    <span className={`rounded bg-slate-800/80 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest border border-slate-200 border-zinc-800 ${t.zone === "RED" ? "text-red-500" : "text-amber-500"}`}>
+                      ZONE: {t.zone}
+                    </span>
+                  </div>
+                  {t.reportedBy ? (
+                    <div>
+                      <p className="text-lg font-bold text-slate-900 dark:text-white tracking-wide">{t.reportedBy.name}</p>
+                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400 font-mono items-center">
+                        <span>{t.reportedBy.email}</span>
+                        {t.reportedBy.phone && (
+                          <><span className="text-slate-700">|</span><span>{t.reportedBy.phone}</span></>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                   <p className="text-sm font-bold text-slate-500 tracking-wide">Anonymous Reporter</p> 
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400 font-mono items-center">
+                    <span className="flex items-center gap-1"><MapPin className="h-3 w-3 text-cyan-500" /> {t.location} [{t.lat.toFixed(5)}, {t.lng.toFixed(5)}]</span>
+                    <span className="text-slate-700">|</span>
+                    <span className="flex items-center gap-1"><Clock className="h-3 w-3 text-cyan-500" /> Reported {new Date(t.createdAt).toLocaleString()}</span>
+                  </div>
+                  {/* News headline */}
+                  {t.newsSource && (
+                    <div className="mt-3 flex items-start gap-2 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
+                      <span className="text-amber-500 text-sm mt-0.5">📰</span>
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500 mb-1">News Source</p>
+                        <p className="text-xs text-slate-300 leading-relaxed">{t.newsSource}</p>
+                      </div>
+                    </div>
+                  )}
+                  <div className="mt-4 p-4 rounded-xl border border-slate-100 border-zinc-800/50 bg-slate-950/60 shadow-inner">
+                    <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed italic border-l-2 border-amber-500/50 pl-3">"{t.summary}"</p>
+                  </div>
+                </div>
+                
+                <div className="lg:min-w-64 bg-slate-950/80 border border-slate-200 border-zinc-800 rounded-xl p-4 flex flex-col gap-3">
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400 border-b border-slate-100 border-zinc-800/50 pb-2">Authority Control</span>
+                  {t.status === "PENDING" ? (
+                    <div className="flex flex-col gap-2 mt-2">
+                      <button
+                        onClick={() => onStatusChange(t.id, "VERIFIED")}
+                        className="w-full rounded-lg bg-emerald-500/10 border border-emerald-500/30 px-3 py-2 text-xs font-bold uppercase text-emerald-500 hover:bg-emerald-500 hover:text-white transition"
+                      >
+                        ✅ Verify Threat
+                      </button>
+                      <button
+                        onClick={() => onStatusChange(t.id, "REJECTED")}
+                        className="w-full rounded-lg bg-slate-800/50 border border-slate-700 px-3 py-2 text-xs font-bold uppercase text-slate-400 hover:bg-slate-800 hover:text-white transition"
+                      >
+                        ❌ Reject (False Alarm)
+                      </button>
+                    </div>
+                  ) : t.status === "VERIFIED" ? (
+                    <div className="flex flex-col gap-2 mt-2">
+                      <div className="text-xs font-bold text-center bg-emerald-500/10 text-emerald-500 border border-emerald-500/30 py-2 rounded-lg">
+                        🟢 THREAT ACTIVE ON MAP
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (confirm("Are you sure? This will REMOVE the threat from the user map immediately.")) {
+                            onRemove(t.id);
+                          }
+                        }}
+                        className="w-full rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2 text-xs font-bold uppercase text-red-400 hover:bg-red-500 hover:text-white transition"
+                      >
+                        🗑️ Threat Over — Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2 mt-2">
+                      <div className="text-xs font-bold text-center bg-slate-800/80 text-slate-400 border border-slate-700 py-2 rounded-lg">
+                        THREAT REJECTED
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (confirm("Permanently delete this rejected threat from the database?")) {
+                            onRemove(t.id);
+                          }
+                        }}
+                        className="w-full rounded-lg bg-slate-700/30 border border-slate-700 px-3 py-2 text-xs font-bold uppercase text-slate-500 hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/30 transition"
+                      >
+                        🗑️ Delete Record
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
