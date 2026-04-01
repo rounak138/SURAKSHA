@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { verifyPassword } from "@/lib/password";
 import { signToken } from "@/lib/jwt-sign";
 import { SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
+import { supabase } from "@/lib/supabase";
 
 const bodySchema = z.object({
   email: z.string().email(),
@@ -34,6 +35,30 @@ export async function POST(req: Request) {
   const ok = await verifyPassword(parsed.data.password, user.passwordHash);
   if (!ok) {
     return NextResponse.json({ error: "Invalid tourist credentials" }, { status: 401 });
+  }
+
+  // Check email verification status
+  if (!user.emailVerified) {
+    // Double-check with Supabase auth in case they verified but we haven't updated DB yet
+    const { data: supaSession } = await supabase.auth.signInWithPassword({
+      email: parsed.data.email,
+      password: parsed.data.password,
+    });
+
+    const isVerifiedInSupabase = supaSession?.user?.email_confirmed_at != null;
+
+    if (isVerifiedInSupabase) {
+      // Sync verified status to our DB
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { emailVerified: true },
+      });
+    } else {
+      return NextResponse.json({
+        error: "Please verify your email first. Check your inbox for the verification link.",
+        requiresVerification: true,
+      }, { status: 403 });
+    }
   }
 
   const token = await signToken({

@@ -2,10 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/password";
-import { signToken } from "@/lib/jwt-sign";
-import { SESSION_COOKIE, sessionCookieOptions } from "@/lib/session";
+import { supabase } from "@/lib/supabase";
 
-// Allow optional space or hyphen after the country code
 const indianPhoneRegex = /^(\+91[\-\s]?|91[\-\s]?)?[6-9]\d{9}$/;
 
 const bodySchema = z.object({
@@ -59,19 +57,38 @@ export async function POST(req: Request) {
       aadhaarNumber,
     } = parsed.data;
 
-    // Check if email already exists
+    // Check if email already exists in our DB
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       return NextResponse.json({ error: "An account with this email already exists" }, { status: 409 });
     }
 
+    // 1. Create Supabase Auth user — this sends a verification email automatically
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        emailRedirectTo: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/auth/verify`,
+        data: { name },
+      },
+    });
+
+    if (authError) {
+      console.error("Supabase signUp error:", authError);
+      // If user already exists in Supabase auth, still proceed (they might be re-registering)
+      if (!authError.message.toLowerCase().includes("already registered")) {
+        return NextResponse.json({ error: "Failed to create account: " + authError.message }, { status: 500 });
+      }
+    }
+
     const passwordHash = await hashPassword(password);
 
-    const user = await prisma.user.create({
+    // 2. Create user in our Prisma database (emailVerified = false until they click the email link)
+    await prisma.user.create({
       data: {
         name,
         email,
-        phone: phone.replace(/[\-\s]/g, ""), // strip spaces/hyphens
+        phone: phone.replace(/[\-\s]/g, ""),
         alternativePhone: alternativePhone.replace(/[\-\s]/g, ""),
         address,
         passwordHash,
@@ -81,23 +98,16 @@ export async function POST(req: Request) {
         emergencyContactRelation,
         citizenship,
         aadhaarNumber,
+        emailVerified: false,
       },
     });
 
-    // Auto-login after registration
-    const token = await signToken({
-      sub: user.id,
-      role: "TOURIST",
-      email: user.email,
-      name: user.name,
-    });
-
-    const res = NextResponse.json({
+    // 3. Return success — user must verify email before they can log in
+    return NextResponse.json({
       ok: true,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      requiresVerification: true,
+      message: "Account created! Please check your email and click the verification link to activate your account.",
     });
-    res.cookies.set(SESSION_COOKIE, token, sessionCookieOptions());
-    return res;
   } catch (error: any) {
     console.error("REGISTER ERROR:", error);
     return NextResponse.json({ error: "Server Error: " + error.message }, { status: 500 });

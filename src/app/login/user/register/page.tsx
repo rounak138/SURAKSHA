@@ -9,6 +9,7 @@ import {
   Phone,
   Lock,
   ShieldAlert,
+  ShieldCheck,
   Eye,
   EyeOff,
   CheckCircle2,
@@ -76,6 +77,7 @@ export default function RegisterPage() {
   const [serverError, setServerError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldError>({});
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
 
   const [form, setForm] = useState({
     name: "",
@@ -125,11 +127,87 @@ export default function RegisterPage() {
         setServerError(data.error ?? "Registration failed. Please try again.");
         return;
       }
-      router.push("/dashboard/user");
-      router.refresh();
+      // Show email verification pending screen
+      setRegisteredEmail(form.email);
     } finally {
       setLoading(false);
     }
+  }
+
+  // ── Email Verification Pending Screen ────────────────────
+  if (registeredEmail) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-[#0B0F19] px-4">
+        <div className="w-full max-w-md">
+          <div className="mb-8 text-center">
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-600 shadow-lg shadow-emerald-900/50">
+              <ShieldCheck className="h-7 w-7 text-white" />
+            </div>
+            <p className="text-xs font-bold uppercase tracking-widest text-emerald-600">Suraksha</p>
+            <h1 className="mt-1 text-3xl font-extrabold text-slate-900 dark:text-white">Check your email</h1>
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-[#2A303C] bg-white dark:bg-[#131B2B] shadow-xl shadow-black/20 px-8 py-10">
+            {/* Animated mail icon */}
+            <div className="mb-6 flex justify-center">
+              <div className="relative flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/10">
+                <Mail className="h-10 w-10 text-emerald-600 dark:text-emerald-400" />
+                <span className="absolute top-1 right-1 flex h-5 w-5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex h-5 w-5 rounded-full bg-emerald-500 items-center justify-center">
+                    <CheckCircle2 className="h-3 w-3 text-white" />
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <div className="text-center mb-6">
+              <h2 className="text-lg font-bold text-slate-900 dark:text-white">Account created successfully!</h2>
+              <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                We sent a verification link to:
+              </p>
+              <p className="mt-1 rounded-lg bg-slate-100 dark:bg-[#0B0F19] border border-slate-200 dark:border-[#2A303C] px-4 py-2 font-mono text-sm font-semibold text-slate-900 dark:text-white">
+                {registeredEmail}
+              </p>
+            </div>
+
+            <div className="mb-6 rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-300">
+              <p className="font-semibold mb-1">📧 Next steps:</p>
+              <ol className="list-decimal list-inside space-y-1 text-xs">
+                <li>Open your email inbox</li>
+                <li>Find the email from Suraksha</li>
+                <li>Click <strong>"Confirm your email"</strong></li>
+                <li>Come back and sign in</li>
+              </ol>
+            </div>
+
+            <Link
+              href="/login/user"
+              className="block w-full rounded-xl bg-emerald-600 py-3 text-center text-sm font-bold text-white shadow-md shadow-emerald-900/30 transition hover:bg-emerald-700"
+            >
+              Go to Sign In →
+            </Link>
+
+            <p className="mt-4 text-center text-xs text-slate-400 dark:text-slate-500">
+              Didn&apos;t receive it? Check your spam folder or{" "}
+              <button
+                type="button"
+                onClick={async () => {
+                  await fetch("/api/auth/resend-verification", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email: registeredEmail }),
+                  });
+                  alert("Verification email resent! Please check your inbox.");
+                }}
+                className="font-semibold text-emerald-600 hover:underline"
+              >
+                resend it
+              </button>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (

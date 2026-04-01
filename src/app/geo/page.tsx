@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { Loader2, Navigation, AlertTriangle, Crosshair, MapPin, Search, Shield, X, Volume2, Bell, Phone } from "lucide-react";
+import { Loader2, Navigation, AlertTriangle, Crosshair, MapPin, Search, Shield, X, Volume2, Bell, Phone, BarChart2 } from "lucide-react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import type { ThreatMarker } from "@/lib/threat-engine";
@@ -395,6 +395,13 @@ export default function GeoPage() {
                 </span>
               </div>
             )}
+            <Link
+              href="/geo/heatmap"
+              className="hidden sm:flex items-center gap-1.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-bold text-red-400 hover:bg-red-500/20 hover:text-red-300 transition"
+            >
+              <BarChart2 className="h-3.5 w-3.5" />
+              Danger Heatmap
+            </Link>
             <Link 
               href="/dashboard/user" 
               className="text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:text-white transition"

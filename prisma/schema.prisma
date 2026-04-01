@@ -20,6 +20,7 @@ model User {
   status                 String   @default("SAFE")
   kycStatus              String   @default("Pending")
   locationTrackingStatus String   @default("Pending")
+  emailVerified          Boolean  @default(false)
 
   // Profile fields
   dateOfBirth                 DateTime?

@@ -6,7 +6,7 @@ import { ShieldAlert, Eye, EyeOff } from "lucide-react";
 
 export default function AdminLoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("admin@suraksha.gov");
+  const [email, setEmail] = useState("admin@aarambchain.gov");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -64,7 +64,7 @@ export default function AdminLoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-200 dark:border-[#2A303C] bg-slate-50 dark:bg-[#0B0F19] text-slate-900 dark:text-white px-3 py-2.5 text-sm outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-400"
                 autoComplete="email"
-                placeholder="admin@suraksha.gov"
+                placeholder="admin@aarambchain.gov"
               />
             </div>
             <div>
