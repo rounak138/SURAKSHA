@@ -9,39 +9,8 @@ const bodySchema = z.object({
   lng: z.number(),
 });
 
-const CACHE_RADIUS_DEG = 0.015; // ~1.5 km — news threats cover a wider area
+const CACHE_RADIUS_DEG = 0.015; // ~1.5 km
 
-const DANGER_KEYWORDS = [
-  "crime", "murder", "robbery", "assault", "riot", "shooting", "stabbing",
-  "theft", "kidnap", "terror", "bomb", "explosion", "attack", "violence",
-  "rape", "gang", "drug", "trafficking", "unrest", "protest", "clash",
-  "flood", "accident", "fire", "emergency", "curfew", "arrest", "loot",
-  "dacoity", "hijack", "abduct", "molest", "arson", "vandalism",
-];
-const SAFE_KEYWORDS = [
-  "festival", "celebration", "tourism", "award", "victory", "peace",
-  "inauguration", "concert", "parade", "sports", "development",
-];
-
-function scoreText(text: string): number {
-  const lower = text.toLowerCase();
-  let s = 0;
-  for (const kw of DANGER_KEYWORDS) if (lower.includes(kw)) s += 14;
-  for (const kw of SAFE_KEYWORDS)   if (lower.includes(kw)) s -= 5;
-  return s;
-}
-
-interface NewsArticle {
-  title: string;
-  description: string | null;
-  url: string;
-  publishedAt: string;
-  source: { name: string };
-}
-
-// POST /api/news-threat
-// Takes user lat/lng, reverse geocodes to city, fetches NewsAPI,
-// filters dangerous articles, creates PENDING threats with news headline
 export async function POST(req: Request) {
   const session = await getSessionPayload();
   if (!session) {
@@ -66,138 +35,253 @@ export async function POST(req: Request) {
     await (prisma.threatZone as any).deleteMany({ where: { expiresAt: { lte: now } } });
   } catch (_) {}
 
-  // 2. Reverse geocode to get city name
+  // 2. Reverse geocode to get city/area name
   let cityName = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   let fullLocation = cityName;
+  let stateName = "";
+  let countryName = "India";
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
     const geoRes = await fetch(
       `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`,
-      { headers: { "User-Agent": "Suraksha-Safety-App/1.0" } },
+      { headers: { "User-Agent": "Suraksha-Safety-App/1.0" }, signal: controller.signal },
     );
+    clearTimeout(timeoutId);
+    
     if (geoRes.ok) {
-      const geoData = await geoRes.json() as {
-        display_name?: string;
-        address?: { city?: string; town?: string; village?: string; state?: string; country?: string };
-      };
+      const geoData = await geoRes.json() as any;
       fullLocation = geoData.display_name?.split(",").slice(0, 3).join(", ") ?? cityName;
       cityName =
         geoData.address?.city ??
         geoData.address?.town ??
         geoData.address?.village ??
+        geoData.address?.county ??
         fullLocation.split(",")[0].trim();
+      stateName = geoData.address?.state ?? "";
+      countryName = geoData.address?.country ?? "India";
     }
   } catch {
     console.warn("[news-threat] Nominatim failed, using coordinates");
   }
+  
+  if (cityName.includes(",") && cityName.match(/\d/)) {
+     cityName = "India"; 
+  }
 
-  // 3. Fetch NewsAPI (with Mock Fallback for Hackathon Demo)
-  const newsKey = process.env.NEWS_API_KEY;
-  let articles: NewsArticle[] = [];
+  // 3. Fetch GDELT news — last 2 days, focused on major crimes
+  let rawArticles: { title: string; url?: string; seendate?: string }[] = [];
+  const crimeKeywords = "murder OR robbery OR rape OR kidnapping OR shooting OR stabbing OR bombing OR terrorist OR riot OR arson OR gang OR massacre OR homicide OR assault OR dacoity OR loot";
+  
+  // Try city-specific search first
+  const searchQueries = [
+    `"${cityName}" (${crimeKeywords})`,
+    ...(stateName ? [`"${stateName}" (${crimeKeywords})`] : []),
+    `"${countryName}" (${crimeKeywords})`,
+  ];
 
-  if (!newsKey || newsKey === "") {
-    console.warn("[news-threat] NEWS_API_KEY missing. Generating mock headlines for demo...");
-    articles = [
-      {
-        title: `Localized protest reported near Rajpur Road crossing, Dehradun`,
-        description: "Small gathering causing traffic disruptions near the main Rajpur Road intersection. Local authorities suggest taking alternate routes.",
-        url: "#",
-        publishedAt: now.toISOString(),
-        source: { name: "Dehradun City News" }
-      },
-      {
-        title: `Spike in petty theft reported in Paltan Bazaar commercial district`,
-        description: "Police have issued a warning to tourists in the Paltan Bazaar area after reports of coordinated pickpocketing today.",
-        url: "#",
-        publishedAt: now.toISOString(),
-        source: { name: "UK Police Alert" }
-      }
-    ];
-  } else {
-    const query = encodeURIComponent(
-      `"${cityName}" AND (crime OR theft OR attack OR incident OR protest OR riot OR explosion OR robbery OR murder OR bomb)`,
-    );
-    const newsUrl = `https://newsapi.org/v2/everything?q=${query}&sortBy=publishedAt&pageSize=20&language=en&apiKey=${newsKey}`;
-
+  for (const queryStr of searchQueries) {
+    if (rawArticles.length >= 10) break;
+    
     try {
-      const newsRes = await fetch(newsUrl, { cache: "no-store" });
-      if (!newsRes.ok) throw new Error("NewsAPI failed");
-      const newsData = await newsRes.json();
-      articles = (newsData.articles ?? []) as NewsArticle[];
+      const gdeltQuery = encodeURIComponent(queryStr);
+      // timespan: 48 hours = last 2 days
+      const gdeltUrl = `https://api.gdeltproject.org/api/v2/doc/doc?query=${gdeltQuery}&mode=artlist&format=json&maxrecords=30&timespan=48h&sort=datedesc`;
+      
+      console.log(`[news-threat] Fetching GDELT: ${queryStr.slice(0, 80)}...`);
+      
+      const gdeltRes = await fetch(gdeltUrl, {
+        cache: "no-store",
+        headers: { "User-Agent": "Suraksha-Safety-App/1.0" },
+      });
+      
+      if (gdeltRes.ok) {
+        const gdeltData = await gdeltRes.json();
+        const articles = gdeltData.articles || [];
+        for (const a of articles) {
+          // Avoid duplicates by title
+          if (!rawArticles.some(existing => existing.title === a.title)) {
+            rawArticles.push({
+              title: a.title,
+              url: a.url,
+              seendate: a.seendate,
+            });
+          }
+        }
+      }
     } catch (err) {
-      console.warn("[news-threat] NewsAPI fetch failed, no fallback provided.");
-      return NextResponse.json({ error: "Failed to reach NewsAPI" }, { status: 502 });
+      console.warn("[news-threat] GDELT fetch failed for query:", err);
     }
   }
 
-  // 4. Score each article and keep only dangerous ones
-  const dangerous = articles
-    .map((a) => {
-      const combined = `${a.title ?? ""} ${a.description ?? ""}`;
-      const score = scoreText(combined);
-      return { ...a, score };
-    })
-    .filter((a) => a.score >= 14) // at least one danger keyword
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5); // max 5 threats per call
+  console.log(`[news-threat] Total unique articles found: ${rawArticles.length}`);
 
-  if (dangerous.length === 0) {
+  if (rawArticles.length === 0) {
     return NextResponse.json({
       ok: true,
-      message: `No dangerous news found near ${cityName} right now.`,
+      message: `No crime news found near ${cityName} in the last 2 days.`,
       created: 0,
-      articles: [],
+      threats: [],
     });
   }
 
-  // 5. For each dangerous article, create a PENDING threat if none exists nearby
-  const created: { location: string; zone: string; headline: string }[] = [];
+  // Prepare article text for OpenAI
+  const rawText = rawArticles
+    .slice(0, 30)
+    .map((a, i) => `${i + 1}. ${a.title}${a.seendate ? ` [${a.seendate}]` : ""}`)
+    .join("\n");
 
-  for (const article of dangerous) {
-    // Deduplicate: skip if PENDING or VERIFIED threat already exists in radius
+  // 4. OpenAI Analysis — extract only REAL, MAJOR crimes from the last 2 days
+  const openAiKey = process.env.OPENAI_API_KEY;
+  if (!openAiKey) {
+    console.warn("[news-threat] OpenAI API key missing.");
+    return NextResponse.json({ error: "OpenAI API key missing" }, { status: 500 });
+  }
+
+  const prompt = `You are a crime intelligence analyst for the SURAKSHA tourist safety platform.
+
+TASK: Analyze the following real news headlines from the last 2 days and extract ONLY REAL, SIGNIFICANT CRIMES that happened near or around "${cityName}, ${stateName}, ${countryName}" (coordinates: ${lat}, ${lng}).
+
+NEWS HEADLINES:
+${rawText}
+
+RULES:
+1. Only include REAL crimes from the headlines above — DO NOT invent or fabricate any incidents
+2. Focus on BIG/SERIOUS crimes only: murder, robbery, rape, kidnapping, terrorist attack, shooting, bombing, riot, dacoity, gang violence, arson, massacre
+3. Skip minor incidents like petty theft, traffic violations, verbal disputes
+4. Each crime must have actually been reported in the headlines above
+5. Extract the actual location mentioned in the headline if available
+6. Estimate a realistic distance_km from the user's coordinates (${lat}, ${lng})
+7. Estimate realistic lat/lng coordinates for where the crime occurred based on the location mentioned
+8. If NO significant crimes are found in the headlines, return an empty array []
+
+Respond ONLY in JSON format:
+[
+  {
+    "threat": "Type of crime (e.g. Murder, Armed Robbery, Kidnapping, Riot)",
+    "severity": "high" | "medium",
+    "reason": "Brief factual summary of the incident from the headline",
+    "distance_km": <estimated distance from user in km>,
+    "newsSource": "Exact or close headline text from the data above",
+    "estimatedLat": <estimated latitude of incident>,
+    "estimatedLng": <estimated longitude of incident>
+  }
+]
+
+Return an empty array [] if there are no significant/major crimes in the headlines.`;
+
+  let analyzedThreats: any[] = [];
+  try {
+    const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openAiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+      }),
+    });
+
+    if (aiRes.ok) {
+      const aiData = await aiRes.json();
+      const content = aiData.choices?.[0]?.message?.content;
+      // Strip markdown fences if present
+      const jsonStr = content?.replace(/```json/g, "").replace(/```/g, "").trim() || "[]";
+      analyzedThreats = JSON.parse(jsonStr);
+      console.log(`[news-threat] OpenAI returned ${analyzedThreats.length} threat(s)`);
+    } else {
+      const errText = await aiRes.text();
+      console.warn("[news-threat] OpenAI API returned status:", aiRes.status, errText);
+    }
+  } catch (e) {
+    console.warn("[news-threat] OpenAI pipeline failed", e);
+  }
+
+  if (!Array.isArray(analyzedThreats) || analyzedThreats.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      created: 0,
+      threats: [],
+      message: `No major crimes detected near ${cityName} in the last 2 days.`,
+    });
+  }
+
+  // 5. Create PENDING threats for admin approval
+  const created: any[] = [];
+
+  for (const t of analyzedThreats) {
+    // Use estimated coordinates from OpenAI if available, otherwise user location
+    const threatLat = typeof t.estimatedLat === "number" && !isNaN(t.estimatedLat) ? t.estimatedLat : lat;
+    const threatLng = typeof t.estimatedLng === "number" && !isNaN(t.estimatedLng) ? t.estimatedLng : lng;
+
+    // Check for duplicate threats (same area + same news source)
     const existing = await (prisma.threatZone as any).findFirst({
       where: {
-        lat: { gte: lat - CACHE_RADIUS_DEG, lte: lat + CACHE_RADIUS_DEG },
-        lng: { gte: lng - CACHE_RADIUS_DEG, lte: lng + CACHE_RADIUS_DEG },
+        lat: { gte: threatLat - CACHE_RADIUS_DEG, lte: threatLat + CACHE_RADIUS_DEG },
+        lng: { gte: threatLng - CACHE_RADIUS_DEG, lte: threatLng + CACHE_RADIUS_DEG },
         status: { in: ["PENDING", "VERIFIED"] },
-        newsSource: article.title, // exact headline dedup
+        newsSource: t.newsSource || t.threat, 
       },
     });
-    if (existing) continue;
+    if (existing) {
+      console.log(`[news-threat] Skipping duplicate: ${t.threat}`);
+      continue;
+    }
 
-    // Map score (0–100+ raw) to threat score (0-100)
-    const threatScore = Math.min(100, Math.max(30, article.score));
+    // Map severity to score
+    let threatScore = 50;
+    if (t.severity?.toLowerCase() === "high") threatScore = 85;
+    if (t.severity?.toLowerCase() === "medium") threatScore = 65;
+    if (t.severity?.toLowerCase() === "low") threatScore = 45;
+
     const zone = classifyZone(threatScore);
     const ttlHours = scoreToTTLHours(threatScore);
     const expiresAt = new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
 
-    const summary = `📰 ${article.title}. Source: ${article.source.name}. ${article.description?.slice(0, 200) ?? ""}`.trim();
+    const distanceInfo = t.distance_km ? ` (~${t.distance_km} km away)` : "";
+    const summary = `🚨 ${t.threat}: ${t.reason}${distanceInfo}. Severity: ${t.severity?.toUpperCase()}.`;
+
+    const threatLocation = t.distance_km && t.distance_km > 5
+      ? `${fullLocation} (nearby area)`
+      : fullLocation;
 
     await (prisma.threatZone as any).create({
       data: {
-        lat,
-        lng,
-        location: fullLocation,
+        lat: threatLat,
+        lng: threatLng,
+        location: threatLocation,
         score: threatScore,
         zone,
         summary,
         status: "PENDING",
         reportedByUserId: session.sub,
-        newsSource: article.title,
+        newsSource: t.newsSource || t.threat,
         expiresAt,
       },
     });
 
-    created.push({ location: fullLocation, zone, headline: article.title });
-    console.log(`[news-threat] Created ${zone} threat: "${article.title}"`);
+    created.push({
+      location: threatLocation,
+      zone,
+      threat: t.threat,
+      severity: t.severity,
+      newsSource: t.newsSource,
+    });
   }
+
+  console.log(`[news-threat] Created ${created.length} new PENDING threat(s) for admin review`);
 
   return NextResponse.json({
     ok: true,
     city: cityName,
     created: created.length,
     threats: created,
+    articlesScanned: rawArticles.length,
     message: created.length > 0
-      ? `${created.length} news-based threat(s) sent to admin for verification.`
-      : "All recent news threats already reported. No duplicates created.",
+      ? `${created.length} real crime(s) from the last 2 days sent to admin for verification.`
+      : "No new threats — duplicates were skipped.",
   });
 }

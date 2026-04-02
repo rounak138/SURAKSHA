@@ -34,6 +34,14 @@ export function LocationPermissionModal({ forceShow, onClose }: Props) {
         (pos) => {
           console.log("Location granted:", pos.coords);
           setPermissionGranted(true);
+          
+          // Trigger dynamic threat ingestion in the background using GDELT fallback
+          fetch("/api/news-threat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          }).catch(err => console.warn("Background threat ingestion failed:", err));
+
           setTimeout(() => {
             dismiss();
           }, 1200);
